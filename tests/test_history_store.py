@@ -97,6 +97,16 @@ def test_replace_updates_last_sync(tmp_path):
     assert store.last_sync is not None
 
 
+def test_save_keeps_previous_version_as_backup(tmp_path):
+    store = make_store(tmp_path)
+    store.replace([make_ep(episode_id="E1")])
+    store.replace([make_ep(episode_id="E2")])
+
+    backup = HistoryStore(tmp_path / "history.json.bak")
+    assert backup.all_episodes()[0].episode_id == "E1"
+    assert store.all_episodes()[0].episode_id == "E2"
+
+
 def test_len(tmp_path):
     eps = [make_ep(episode_id=f"E{i}", episode_number=float(i)) for i in range(5)]
     assert len(make_store(tmp_path, eps)) == 5

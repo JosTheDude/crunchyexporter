@@ -1,9 +1,9 @@
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from src.crunchyroll.models import Episode, SeriesSummary
+from .atomic import save_json
 
 DEFAULT_PATH = Path("data") / "history.json"
 
@@ -20,9 +20,7 @@ class HistoryStore:
         return {"last_sync": None, "episodes": []}
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
+        save_json(self.path, self._data)
 
     def update(self, episodes: list[Episode]) -> int:
         existing_ids = {ep["episode_id"] for ep in self._data["episodes"]}

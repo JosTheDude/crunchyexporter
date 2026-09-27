@@ -3,6 +3,7 @@ data/
 __pycache__/
 *.pyc
 .env
+.notifleet-api-key
 config/*.yaml
 *.egg-info/
 dist/

@@ -5,6 +5,7 @@ from src.crunchyroll.models import SeriesSummary
 class ExportResult:
     def __init__(self):
         self.updated: list[str] = []
+        self.successful_series_ids: list[str] = []
         self.skipped: list[str] = []
         self.failed: list[tuple[str, str]] = []
 

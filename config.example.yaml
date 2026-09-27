@@ -45,3 +45,12 @@ exporters:
     client_id: ""
     client_secret: ""
     access_token: ""
+
+# Optional: notify a Notifleet route when `sync` fails. The API key stays in
+# NOTIFLEET_API_KEY, or in a mode-600 file excluded from Git.
+notifications:
+  notifleet:
+    url: ""
+    route: "personal"
+    api_key_env: "NOTIFLEET_API_KEY"
+    # api_key_file: "~/.config/crunchyexporter/notifleet-api-key"

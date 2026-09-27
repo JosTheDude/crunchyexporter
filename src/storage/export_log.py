@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from .atomic import save_json
 
 DEFAULT_PATH = Path("data") / "export_log.json"
 
@@ -17,9 +18,7 @@ class ExportLog:
         return {}
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
+        save_json(self.path, self._data)
 
     def record(self, target: str, result) -> None:
         self._data["last_export"] = datetime.now(timezone.utc).isoformat()

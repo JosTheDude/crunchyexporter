@@ -3,6 +3,7 @@ import sys
 import os
 import yaml
 import click
+import requests
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -17,6 +18,7 @@ from src.exporters.anilist import AniListExporter
 from src.exporters.mal import MALExporter, get_auth_url as mal_auth_url, exchange_code as mal_exchange
 from src.exporters.mal_xml import MALXMLExporter
 from src.storage.export_log import ExportLog
+from src.storage.export_state import ExportState
 
 console = Console()
 
@@ -74,6 +76,7 @@ def fetch(ctx, etp_rt, replace):
         try:
             token = auth.login_with_etp_rt(etp_rt)
         except CRAuthError as e:
+            ctx.obj["crunchyroll_auth_failed"] = True
             console.print(f"[red]Authentication failed:[/red] {e}")
             raise SystemExit(1)
 
@@ -178,15 +181,16 @@ def export(ctx, target):
     summaries = store.series_summaries()
     console.print(f"Exporting {len(summaries)} series...")
     log = ExportLog()
+    state = ExportState(Path(store_path).parent / "export_state.json")
 
     if target in ("xml", "all"):
         _export_xml(cfg, summaries, log)
 
     if target in ("anilist", "all"):
-        _export_anilist(cfg, summaries, log)
+        _export_anilist(cfg, summaries, log, state)
 
     if target in ("mal", "all"):
-        _export_mal(cfg, summaries, log)
+        _export_mal(cfg, summaries, log, state)
 
 
 def _export_xml(cfg: dict, summaries, log: ExportLog):
@@ -197,7 +201,7 @@ def _export_xml(cfg: dict, summaries, log: ExportLog):
     console.print(f"[green]XML exported:[/green] {xml_path} ({len(result.updated)} series)")
 
 
-def _export_anilist(cfg: dict, summaries, log: ExportLog):
+def _export_anilist(cfg: dict, summaries, log: ExportLog, state: ExportState):
     al_cfg = cfg.get("exporters", {}).get("anilist", {})
     token = al_cfg.get("access_token")
     if not token:
@@ -209,13 +213,17 @@ def _export_anilist(cfg: dict, summaries, log: ExportLog):
         console.print("3. Add it to config.yaml under [bold]exporters.anilist.access_token[/bold].")
         return
 
+    pending = state.pending("anilist", summaries)
     with console.status("[bold]Exporting to AniList..."):
-        result = AniListExporter(token).export(summaries)
+        result = AniListExporter(token).export(pending)
+    pending_ids = {s.series_id for s in pending}
+    result.skipped.extend(s.series_title for s in summaries if s.series_id not in pending_ids)
+    state.record_successes("anilist", pending, result.successful_series_ids)
     log.record("anilist", result)
     _print_result("AniList", result)
 
 
-def _export_mal(cfg: dict, summaries, log: ExportLog):
+def _export_mal(cfg: dict, summaries, log: ExportLog, state: ExportState):
     mal_cfg = cfg.get("exporters", {}).get("mal", {})
     token = mal_cfg.get("access_token")
     if not token:
@@ -233,8 +241,12 @@ def _export_mal(cfg: dict, summaries, log: ExportLog):
             token = mal_exchange(client_id, code, verifier, client_secret)
         console.print(f"[green]Token obtained.[/green] Save it in config.yaml under exporters.mal.access_token")
 
+    pending = state.pending("mal", summaries)
     with console.status("[bold]Exporting to MyAnimeList..."):
-        result = MALExporter(token).export(summaries)
+        result = MALExporter(token).export(pending)
+    pending_ids = {s.series_id for s in pending}
+    result.skipped.extend(s.series_title for s in summaries if s.series_id not in pending_ids)
+    state.record_successes("mal", pending, result.successful_series_ids)
     log.record("mal", result)
     _print_result("MyAnimeList", result)
 
@@ -244,6 +256,56 @@ def _print_result(name: str, result):
                   f"{len(result.skipped)} skipped, {len(result.failed)} failed")
     for title, reason in result.failed:
         console.print(f"  [red]FAIL[/red] {title}: {reason}")
+
+
+def _notify_notifleet(cfg: dict, title: str, message: str) -> None:
+    notifleet_cfg = cfg.get("notifications", {}).get("notifleet", {})
+    base_url = notifleet_cfg.get("url")
+    if not base_url:
+        return
+
+    api_key_env = notifleet_cfg.get("api_key_env", "NOTIFLEET_API_KEY")
+    api_key = os.environ.get(api_key_env)
+    api_key_file = notifleet_cfg.get("api_key_file")
+    if not api_key and api_key_file:
+        try:
+            api_key = Path(api_key_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as e:
+            console.print(f"[yellow]Notifleet notification skipped:[/yellow] {e}")
+            return
+    if not api_key:
+        console.print(
+            f"[yellow]Notifleet notification skipped:[/yellow] "
+            f"{api_key_env} is not set."
+        )
+        return
+
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/v1/notify",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "route": notifleet_cfg.get("route", "personal"),
+                "title": title,
+                "message": message,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException as e:
+        console.print(f"[yellow]Notifleet notification failed:[/yellow] {e}")
+
+
+def _notify_sync_failure(ctx, cfg: dict, message: str) -> None:
+    if ctx.obj.pop("crunchyroll_auth_failed", False):
+        _notify_notifleet(
+            cfg,
+            "Crunchyroll authentication needs attention",
+            "Sync could not authenticate with Crunchyroll. Your etp_rt cookie may have expired; "
+            "refresh it in config.yaml, then run sync again.",
+        )
+        return
+    _notify_notifleet(cfg, "CrunchyExporter sync failed", message)
 
 
 @cli.command()
@@ -267,12 +329,28 @@ def sync(ctx, target):
     cfg = ctx.obj["config"]
     cr_cfg = cfg.get("crunchyroll", {})
     etp_rt = cr_cfg.get("etp_rt", "")
-    if not etp_rt:
-        console.print("[red]sync requires etp_rt set in config.yaml[/red]")
-        raise SystemExit(1)
 
-    ctx.invoke(fetch, etp_rt=etp_rt, replace=False)
-    ctx.invoke(export, target=target)
+    try:
+        if not etp_rt:
+            console.print("[red]sync requires etp_rt set in config.yaml[/red]")
+            raise SystemExit(1)
+        ctx.invoke(fetch, etp_rt=etp_rt, replace=False)
+        ctx.invoke(export, target=target)
+    except SystemExit as e:
+        if e.code not in (0, None):
+            _notify_sync_failure(
+                ctx,
+                cfg,
+                f"Sync to {target} failed with exit code {e.code}. Check the sync logs.",
+            )
+        raise
+    except Exception as e:
+        _notify_sync_failure(
+            ctx,
+            cfg,
+            f"Sync to {target} failed: {type(e).__name__}. Check the sync logs.",
+        )
+        raise
 
 
 @cli.command()

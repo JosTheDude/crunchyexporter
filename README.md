@@ -70,7 +70,7 @@ Logged in. Account ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 Sync complete. 1513 new episodes added. Total: 1513 episodes across 28 series.
 ```
 
-History is saved to `data/history.json`. Re-running `fetch` only adds new episodes — it never duplicates.
+History is saved to `data/history.json`. Re-running `fetch` only adds new episodes — it never duplicates. Writes are atomic, and the previous version is retained as `data/history.json.bak`.
 
 > **Note:** The `etp_rt` cookie expires when your browser session ends. If `fetch` starts failing with a 401 error, just grab a fresh cookie from DevTools.
 
@@ -203,6 +203,27 @@ python src/main.py sync --target anilist     # fetch + export AniList only
 
 Requires `etp_rt` set in `config.yaml` (no interactive prompts).
 
+AniList and MyAnimeList exports remember each successfully exported series. Later
+syncs only call their APIs for new or changed progress; failed matches remain
+pending for the next run. The state is stored beside history as `export_state.json`.
+
+### Notify failed syncs with Notifleet (optional)
+
+Set a Notifleet endpoint and route in `config.yaml`:
+
+```yaml
+notifications:
+  notifleet:
+    url: "https://notifleet.example.com"
+    route: "personal"
+    api_key_env: "NOTIFLEET_API_KEY"
+```
+
+Set the named API-key environment variable before running `sync`, or set
+`api_key_file` to a mode-600 file containing only the key. The key is never
+stored in `config.yaml`. When `sync` exits unsuccessfully, CrunchyExporter sends
+the selected route a notification with the target and failure category.
+
 ### Schedule a daily background task
 
 ```bash
@@ -289,6 +310,13 @@ exporters:
     client_id: ""
     client_secret: ""     # Required for web app type
     access_token: ""
+
+notifications:
+  notifleet:
+    url: ""               # Optional: endpoint to notify when sync fails
+    route: "personal"
+    api_key_env: "NOTIFLEET_API_KEY"
+    # api_key_file: "~/.config/crunchyexporter/notifleet-api-key"
 ```
 
 ---
